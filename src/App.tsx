@@ -55,6 +55,13 @@ function countFor(cat: Category) {
   return IMAGES.filter(i => i.category === cat).length
 }
 
+const BADGE_LABEL: Record<Exclude<Category, 'all'>, string> = {
+  mobile: '移动',
+  pc: 'PC',
+  admin: '后台',
+  other: '其他',
+}
+
 export default function App() {
   const [activeCategory, setActiveCategory] = useState<Category>('all')
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
@@ -172,10 +179,14 @@ export default function App() {
           <button
             key={img.id}
             className="gallery-item"
+            style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}
             onClick={() => setLightboxIndex(index)}
             aria-label={img.label}
           >
             <img src={img.src} alt={img.label} loading="lazy" />
+            <span className="gallery-overlay" aria-hidden="true" />
+            <span className="gallery-zoom" aria-hidden="true" />
+            <span className={`gallery-badge gallery-badge--${img.category}`}>{BADGE_LABEL[img.category]}</span>
             <span className="gallery-label">{img.label}</span>
           </button>
         ))}

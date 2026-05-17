@@ -67,9 +67,13 @@ export default function App() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   const [imgScale, setImgScale] = useState(1)
   const [imgTranslate, setImgTranslate] = useState({ x: 0, y: 0 })
+  const [isGestureActive, setIsGestureActive] = useState(false)
+  const [showLightboxHint, setShowLightboxHint] = useState(false)
   const touchStartX = useRef<number | null>(null)
   const pinchRef = useRef<{ startDist: number; startScale: number } | null>(null)
   const panRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null)
+  const mousePanRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; hasMoved: boolean } | null>(null)
+  const suppressImageClickRef = useRef(false)
 
   const filtered = activeCategory === 'all'
     ? IMAGES
@@ -94,8 +98,66 @@ export default function App() {
     return () => { document.body.style.overflow = '' }
   }, [lightboxIndex])
 
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (mousePanRef.current === null) return
+      const deltaX = e.clientX - mousePanRef.current.startX
+      const deltaY = e.clientY - mousePanRef.current.startY
+      if (!mousePanRef.current.hasMoved && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
+        mousePanRef.current.hasMoved = true
+      }
+      setImgTranslate({
+        x: mousePanRef.current.baseX + deltaX,
+        y: mousePanRef.current.baseY + deltaY,
+      })
+    }
+
+    const handleMouseUp = () => {
+      if (mousePanRef.current === null) return
+      suppressImageClickRef.current = mousePanRef.current.hasMoved
+      mousePanRef.current = null
+      setIsGestureActive(false)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [])
+
   // Reset zoom and position when switching images
-  useEffect(() => { setImgScale(1); setImgTranslate({ x: 0, y: 0 }) }, [lightboxIndex])
+  useEffect(() => {
+    setImgScale(1)
+    setImgTranslate({ x: 0, y: 0 })
+    setIsGestureActive(false)
+    mousePanRef.current = null
+    suppressImageClickRef.current = false
+  }, [lightboxIndex])
+
+  useEffect(() => {
+    if (lightboxIndex === null) {
+      setShowLightboxHint(false)
+      return
+    }
+
+    const storageKey = 'exchange-gallery-lightbox-hint-seen'
+    let shouldShow = false
+
+    try {
+      shouldShow = !window.localStorage.getItem(storageKey)
+      if (shouldShow) window.localStorage.setItem(storageKey, '1')
+    } catch {
+      shouldShow = true
+    }
+
+    if (!shouldShow) return
+
+    setShowLightboxHint(true)
+    const timer = window.setTimeout(() => setShowLightboxHint(false), 2600)
+    return () => window.clearTimeout(timer)
+  }, [lightboxIndex])
 
   const prev = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -110,12 +172,16 @@ export default function App() {
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
+      e.preventDefault()
+      setIsGestureActive(true)
       const dx = e.touches[0].clientX - e.touches[1].clientX
       const dy = e.touches[0].clientY - e.touches[1].clientY
       pinchRef.current = { startDist: Math.hypot(dx, dy), startScale: imgScale }
       panRef.current = null
       touchStartX.current = null
     } else if (imgScale > 1) {
+      e.preventDefault()
+      setIsGestureActive(true)
       panRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, baseX: imgTranslate.x, baseY: imgTranslate.y }
       touchStartX.current = null
     } else {
@@ -124,6 +190,7 @@ export default function App() {
   }
   const handleTouchMove = (e: React.TouchEvent) => {
     if (e.touches.length === 2 && pinchRef.current) {
+      e.preventDefault()
       const dx = e.touches[0].clientX - e.touches[1].clientX
       const dy = e.touches[0].clientY - e.touches[1].clientY
       const dist = Math.hypot(dx, dy)
@@ -131,6 +198,7 @@ export default function App() {
       setImgScale(next)
       if (next <= 1) setImgTranslate({ x: 0, y: 0 })
     } else if (e.touches.length === 1 && panRef.current) {
+      e.preventDefault()
       setImgTranslate({
         x: panRef.current.baseX + (e.touches[0].clientX - panRef.current.startX),
         y: panRef.current.baseY + (e.touches[0].clientY - panRef.current.startY),
@@ -138,8 +206,16 @@ export default function App() {
     }
   }
   const handleTouchEnd = (e: React.TouchEvent) => {
-    if (pinchRef.current !== null) { pinchRef.current = null; return }
-    if (panRef.current !== null) { panRef.current = null; return }
+    if (pinchRef.current !== null) {
+      pinchRef.current = null
+      if (e.touches.length === 0) setIsGestureActive(false)
+      return
+    }
+    if (panRef.current !== null) {
+      panRef.current = null
+      if (e.touches.length === 0) setIsGestureActive(false)
+      return
+    }
     if (touchStartX.current === null) return
     const diff = touchStartX.current - e.changedTouches[0].clientX
     touchStartX.current = null
@@ -149,6 +225,43 @@ export default function App() {
         ? diff > 0 ? (i + 1) % len : (i - 1 + len) % len
         : null
       )
+    }
+  }
+
+  const setZoom = (nextScale: number) => {
+    const clamped = Math.min(4, Math.max(1, nextScale))
+    setImgScale(clamped)
+    setShowLightboxHint(false)
+    if (clamped <= 1) setImgTranslate({ x: 0, y: 0 })
+  }
+
+  const handleWheelZoom = (e: React.WheelEvent<HTMLImageElement>) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setZoom(imgScale + (e.deltaY < 0 ? 0.2 : -0.2))
+  }
+
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    e.stopPropagation()
+    if (suppressImageClickRef.current) {
+      suppressImageClickRef.current = false
+      return
+    }
+    if (!window.matchMedia('(pointer: fine)').matches) return
+    setZoom(imgScale > 1 ? 1 : 2.75)
+  }
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (imgScale <= 1) return
+    e.preventDefault()
+    e.stopPropagation()
+    setIsGestureActive(true)
+    mousePanRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      baseX: imgTranslate.x,
+      baseY: imgTranslate.y,
+      hasMoved: false,
     }
   }
 
@@ -205,12 +318,26 @@ export default function App() {
 
           <div className="lb-content" onClick={e => e.stopPropagation()}>
             <img
+              className={imgScale > 1
+                ? `lb-image lb-image--zoomed${isGestureActive ? ' lb-image--dragging' : ''}`
+                : 'lb-image'}
               src={filtered[lightboxIndex].src}
               alt={filtered[lightboxIndex].label}
-              style={imgScale !== 1 || imgTranslate.x !== 0 || imgTranslate.y !== 0
-                ? { transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})`, transformOrigin: 'center', transition: 'none' }
-                : undefined}
+              draggable={false}
+              onClick={handleImageClick}
+              onMouseDown={handleMouseDown}
+              onWheel={handleWheelZoom}
+              style={{
+                transform: `translate(${imgTranslate.x}px, ${imgTranslate.y}px) scale(${imgScale})`,
+                transformOrigin: 'center',
+                transition: isGestureActive ? 'none' : 'transform 0.22s ease',
+              }}
             />
+            {showLightboxHint && (
+              <div className="lb-hint" aria-live="polite">
+                双指缩放，左右滑动切换
+              </div>
+            )}
             <div className="lb-footer">
               <span className="lb-caption">{filtered[lightboxIndex].label}</span>
               <span className="lb-counter">{lightboxIndex + 1} / {filtered.length}</span>
